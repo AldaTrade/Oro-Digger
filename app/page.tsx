@@ -160,32 +160,6 @@ function formatDiff(target: Date, now: Date) {
 }
 
 /* ---------------------------------------------------
-   LÓGICA DE SCALPING (UMBRAL RELAJADO)
-----------------------------------------------------*/
-
-function getSignalFromCandles(
-  closes: number[]
-): "long" | "short" | "neutral" {
-  if (!closes || closes.length < 2) return "neutral";
-
-  const last = closes[closes.length - 1];
-  const prev = closes[closes.length - 2];
-
-  const diffPct = (last - prev) / prev;
-
-  // 👉 UMBRAL RELAJADO (opción A que te pasé)
-  if (diffPct > 0.00035) {
-    return "long";
-  }
-
-  if (diffPct < -0.00035) {
-    return "short";
-  }
-
-  return "neutral";
-}
-
-/* ---------------------------------------------------
    CONTADOR DINÁMICO (PRE ⟷ CLOSE)
 ----------------------------------------------------*/
 
@@ -232,14 +206,46 @@ function MarketCountdown() {
 }
 
 /* ---------------------------------------------------
-   PÁGINA PRINCIPAL
+   LÓGICA DEL SEMÁFORO (USA /api/finnhub/candles)
+----------------------------------------------------*/
+
+type FinnhubCandles = {
+  c?: number[]; // cierres
+  t?: number[]; // timestamps
+  s?: string;   // "ok" o "no_data"
+};
+
+function calcularSignal(data: FinnhubCandles): "long" | "short" | "neutral" {
+  if (!data || data.s !== "ok" || !data.c || data.c.length < 2) {
+    return "neutral";
+  }
+
+  const closes = data.c;
+  const last = closes[closes.length - 1];
+  const prev = closes[closes.length - 2];
+
+  const diffPct = (last - prev) / prev;
+
+  // UMBRAL MÁS RELAJADO (~0.01 %)
+  if (diffPct > 0.0001) {
+    return "long";
+  }
+
+  if (diffPct < -0.0001) {
+    return "short";
+  }
+
+  return "neutral";
+}
+
+/* ---------------------------------------------------
+   PÁGINA PRINCIPAL (CHART + SEMÁFORO + CONTADOR)
 ----------------------------------------------------*/
 
 export default function Home() {
-  // ahora SÍ cambiamos la señal
   const [signal, setSignal] = useState<"long" | "short" | "neutral">("neutral");
 
-  // 1) TradingView chart (igual que antes)
+  // Carga / recarga del widget de TradingView (NO TOCAMOS NADA)
   useEffect(() => {
     const existing = document.getElementById("tv-advanced-script");
     if (existing && existing.parentNode) {
@@ -276,7 +282,7 @@ export default function Home() {
     }
   }, []);
 
-  // 2) Polling de velas para el semáforo
+  // Polling al backend de Finnhub para actualizar el semáforo
   useEffect(() => {
     async function fetchSignal() {
       try {
@@ -288,24 +294,21 @@ export default function Home() {
         );
 
         if (!res.ok) {
-          console.error("Error al pedir velas", await res.text());
+          console.error("Error /api/finnhub/candles", await res.text());
           setSignal("neutral");
           return;
         }
 
-        const data = await res.json();
-
-        // Finnhub devuelve c = array de cierres
-        const closes = Array.isArray(data?.c) ? data.c as number[] : [];
-        const newSignal = getSignalFromCandles(closes);
-        setSignal(newSignal);
-      } catch (err) {
-        console.error("Error en fetchSignal", err);
+        const data: FinnhubCandles = await res.json();
+        const s = calcularSignal(data);
+        setSignal(s);
+      } catch (e) {
+        console.error("Error obteniendo señal:", e);
         setSignal("neutral");
       }
     }
 
-    fetchSignal();
+    fetchSignal(); // primera vez
     const id = setInterval(fetchSignal, 30_000); // cada 30s
     return () => clearInterval(id);
   }, []);
@@ -378,9 +381,13 @@ export default function Home() {
         <MarketCountdown />
       </div>
 
-      {/* Semáforo flotante y draggable */}
+      {/* Noticias (si quieres, déjalo; si no, comenta esta línea) */}
+      <div style={{ marginTop: 16 }}>
+        <GoldNews />
+      </div>
+
+      {/* Semáforo flotante y draggable (horizontal, arriba derecha por defecto) */}
       <TrafficLight signal={signal} />
     </div>
   );
 }
-
