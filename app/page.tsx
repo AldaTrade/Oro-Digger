@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react"; import GoldNews from "./GoldNews";
+import React, { useEffect, useRef, useState } from "react";
+import GoldNews from "./GoldNews";
 
 /* ---------------------------------------------------
    SEMÁFORO DRAGGABLE (HORIZONTAL ARRIBA DERECHA)
@@ -159,6 +160,32 @@ function formatDiff(target: Date, now: Date) {
 }
 
 /* ---------------------------------------------------
+   LÓGICA DE SCALPING (UMBRAL RELAJADO)
+----------------------------------------------------*/
+
+function getSignalFromCandles(
+  closes: number[]
+): "long" | "short" | "neutral" {
+  if (!closes || closes.length < 2) return "neutral";
+
+  const last = closes[closes.length - 1];
+  const prev = closes[closes.length - 2];
+
+  const diffPct = (last - prev) / prev;
+
+  // 👉 UMBRAL RELAJADO (opción A que te pasé)
+  if (diffPct > 0.00035) {
+    return "long";
+  }
+
+  if (diffPct < -0.00035) {
+    return "short";
+  }
+
+  return "neutral";
+}
+
+/* ---------------------------------------------------
    CONTADOR DINÁMICO (PRE ⟷ CLOSE)
 ----------------------------------------------------*/
 
@@ -172,9 +199,6 @@ function MarketCountdown() {
       const nextPre = getNextPreMarket(now);
       const nextClose = getNextClose(now);
 
-      // El siguiente evento del calendario semanal manda:
-      // - Si lo próximo es la apertura (domingo 22h) => PRE
-      // - Si lo próximo es el cierre (viernes 21h)  => CLOSE
       if (nextPre.getTime() < nextClose.getTime()) {
         setLabel("Pre");
         setTimeLeft(formatDiff(nextPre, now));
@@ -208,16 +232,15 @@ function MarketCountdown() {
 }
 
 /* ---------------------------------------------------
-   PÁGINA PRINCIPAL (CHART EXACTO COMO TENÍAS)
+   PÁGINA PRINCIPAL
 ----------------------------------------------------*/
 
 export default function Home() {
-  // De momento el semáforo está siempre "neutral";
-  // luego aquí enchufaremos la lógica de scalping.
-  const [signal] = useState<"long" | "short" | "neutral">("neutral");
+  // ahora SÍ cambiamos la señal
+  const [signal, setSignal] = useState<"long" | "short" | "neutral">("neutral");
 
+  // 1) TradingView chart (igual que antes)
   useEffect(() => {
-    // Eliminamos scripts antiguos, por si recargas en caliente
     const existing = document.getElementById("tv-advanced-script");
     if (existing && existing.parentNode) {
       existing.parentNode.removeChild(existing);
@@ -231,8 +254,8 @@ export default function Home() {
 
     script.innerHTML = JSON.stringify({
       autosize: true,
-      symbol: "OANDA:XAUUSD", // mismo símbolo que usas en TradingView
-      interval: "1", // 1 minuto por defecto
+      symbol: "OANDA:XAUUSD",
+      interval: "1",
       timezone: "Etc/UTC",
       theme: "light",
       style: "1",
@@ -248,9 +271,43 @@ export default function Home() {
 
     const container = document.getElementById("tv-advanced-container");
     if (container) {
-      container.innerHTML = ""; // limpiamos
+      container.innerHTML = "";
       container.appendChild(script);
     }
+  }, []);
+
+  // 2) Polling de velas para el semáforo
+  useEffect(() => {
+    async function fetchSignal() {
+      try {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const fromSec = nowSec - 60 * 60; // última hora
+
+        const res = await fetch(
+          `/api/finnhub/candles?resolution=1&from=${fromSec}&to=${nowSec}`
+        );
+
+        if (!res.ok) {
+          console.error("Error al pedir velas", await res.text());
+          setSignal("neutral");
+          return;
+        }
+
+        const data = await res.json();
+
+        // Finnhub devuelve c = array de cierres
+        const closes = Array.isArray(data?.c) ? data.c as number[] : [];
+        const newSignal = getSignalFromCandles(closes);
+        setSignal(newSignal);
+      } catch (err) {
+        console.error("Error en fetchSignal", err);
+        setSignal("neutral");
+      }
+    }
+
+    fetchSignal();
+    const id = setInterval(fetchSignal, 30_000); // cada 30s
+    return () => clearInterval(id);
   }, []);
 
   return (
@@ -321,8 +378,9 @@ export default function Home() {
         <MarketCountdown />
       </div>
 
-      {/* Semáforo flotante y draggable (horizontal, arriba derecha por defecto) */}
+      {/* Semáforo flotante y draggable */}
       <TrafficLight signal={signal} />
     </div>
   );
 }
+
